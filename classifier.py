@@ -13,7 +13,7 @@ from bert import BertModel
 # from optimizer import AdamW
 from tqdm import tqdm
 from torch.optim import AdamW
-
+import matplotlib.pyplot as plt
 TQDM_DISABLE=False
 # fix the random seed
 def seed_everything(seed=11711):
@@ -36,7 +36,6 @@ class BertSentimentClassifier(torch.nn.Module):
         super(BertSentimentClassifier, self).__init__()
         self.num_labels = config.num_labels
         self.bert = BertModel.from_pretrained('./bert-base-uncased')
-        self.h_size=100
         # Pretrain mode does not require updating bert paramters.
         for param in self.bert.parameters():
             if config.option == 'pretrain':
@@ -49,9 +48,7 @@ class BertSentimentClassifier(torch.nn.Module):
         # linear layer
         self.classify = nn.Sequential(
             nn.Dropout(config.hidden_dropout_prob),
-            nn.Linear(config.hidden_size,self.h_size),
-            nn.ReLU(),
-            nn.Linear(self.h_size,self.num_labels)
+            nn.Linear(config.hidden_size,self.num_labels),
         )
 
 
@@ -273,8 +270,12 @@ def train(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
 
+    train_accuracies=[]
+    val_accuracies=[]
+    train_losses=[]
+
     # Run for the specified number of epochs
-    for epoch in range(args.epochs):
+    for epoch in range(1,args.epochs+1):
         model.train()
         train_loss = 0
         num_batches = 0
@@ -301,11 +302,50 @@ def train(args):
         train_acc, train_f1, *_  = model_eval(train_dataloader, model, device)
         dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device)
 
+        train_accuracies.append(train_acc)
+        val_accuracies.append(dev_acc)
+        train_losses.append(train_loss)
+
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
             save_model(model, optimizer, args, config, args.filepath)
 
-        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}, train f1 :: {train_f1 :.3f}, dev f1 :: {dev_f1 :.3f}")
+    plot(train_accuracies,val_accuracies,train_losses,args.epochs)
+
+
+def plot(train_accuracy, val_accuracy, train_loss, num_epochs):
+    # 第一张图：训练集和验证集准确率
+    epochs = np.arange(1, num_epochs + 1)
+    plt.figure(figsize=(10, 5))
+    plt.subplot(1, 2, 1)  # 创建一个1x2的子图网格的第一个子图
+    plt.plot(epochs, train_accuracy, label='Training Accuracy', marker=None)
+    plt.plot(epochs, val_accuracy, label='Validation Accuracy', marker=None)
+    plt.title('Training and Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # 设置横坐标只显示整数
+    plt.xticks(epochs)
+
+    # 第二张图：训练集loss
+    plt.subplot(1, 2, 2)  # 创建一个1x2的子图网格的第二个子图
+    plt.plot(epochs, train_loss, label='Training Loss', marker=None)
+    plt.title('Training Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    # 设置横坐标只显示整数
+    plt.xticks(epochs)
+
+    # 调整子图间距
+    plt.tight_layout()
+
+    # 保存图片
+    # plt.savefig('./cfimdb_training_validation_plots.png')
+    plt.savefig('./sst_training_validation_plots.png')
 
 
 def test(args):
@@ -343,7 +383,7 @@ def test(args):
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="finetune")
@@ -352,11 +392,20 @@ def get_args():
     parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
                                     
 
-    parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=64)
+    parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.1)
     parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-                        default=1e-5)
-                  
+                        default=5e-5)
+# 2e-5 0.1 0.509 1
+# 3e-5 0.1 0.523 1
+# 4e-5 0.1 0.531 1
+# 5e-5 0.0 0.511 2
+# 5e-5 0.1 0.537 1
+# 5e-5 0.2 0.530 1
+# 5e-5 0.3 0.528 1
+# 6e-5 0.1 0.515 1
+
+
     args = parser.parse_args()
     return args
 
@@ -365,44 +414,44 @@ if __name__ == "__main__":
     seed_everything(args.seed)
     #args.filepath = f'{args.option}-{args.epochs}-{args.lr}.pt'
 
-    print('Training Sentiment Classifier on SST...')
-    config = SimpleNamespace(
-        filepath='sst-classifier.pt',
-        lr=args.lr,
-        use_gpu=args.use_gpu,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        hidden_dropout_prob=args.hidden_dropout_prob,
-        train='data/ids-sst-train.csv',
-        dev='data/ids-sst-dev.csv',
-        test='data/ids-sst-test-student.csv',
-        option=args.option,
-        dev_out = 'predictions/'+args.option+'-sst-dev-out.csv',
-        test_out = 'predictions/'+args.option+'-sst-test-out.csv'
-    )
-
-    train(config)
-
-    print('Evaluating on SST...')
-    test(config)
-
-    # print('Training Sentiment Classifier on cfimdb...')
+    # print('Training Sentiment Classifier on SST...')
     # config = SimpleNamespace(
-    #     filepath='cfimdb-classifier.pt',
+    #     filepath='sst-classifier.pt',
     #     lr=args.lr,
     #     use_gpu=args.use_gpu,
     #     epochs=args.epochs,
     #     batch_size=args.batch_size,
     #     hidden_dropout_prob=args.hidden_dropout_prob,
-    #     train='data/ids-cfimdb-train.csv',
-    #     dev='data/ids-cfimdb-dev.csv',
-    #     test='data/ids-cfimdb-test-student.csv',
+    #     train='data/ids-sst-train.csv',
+    #     dev='data/ids-sst-dev.csv',
+    #     test='data/ids-sst-test-student.csv',
     #     option=args.option,
-    #     dev_out = 'predictions/'+args.option+'-cfimdb-dev-out.csv',
-    #     test_out = 'predictions/'+args.option+'-cfimdb-test-out.csv'
+    #     dev_out = 'predictions/'+args.option+'-sst-dev-out.csv',
+    #     test_out = 'predictions/'+args.option+'-sst-test-out.csv'
     # )
 
     # train(config)
 
-    # print('Evaluating on cfimdb...')
+    # print('Evaluating on SST...')
     # test(config)
+
+    print('Training Sentiment Classifier on cfimdb...')
+    config = SimpleNamespace(
+        filepath='cfimdb-classifier.pt',
+        lr=args.lr,
+        use_gpu=args.use_gpu,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        hidden_dropout_prob=args.hidden_dropout_prob,
+        train='data/ids-cfimdb-train.csv',
+        dev='data/ids-cfimdb-dev.csv',
+        test='data/ids-cfimdb-test-student.csv',
+        option=args.option,
+        dev_out = 'predictions/'+args.option+'-cfimdb-dev-out.csv',
+        test_out = 'predictions/'+args.option+'-cfimdb-test-out.csv'
+    )
+
+    train(config)
+
+    print('Evaluating on cfimdb...')
+    test(config)

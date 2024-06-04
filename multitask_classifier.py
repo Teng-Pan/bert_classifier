@@ -1,5 +1,6 @@
 import time, random, numpy as np, argparse, sys, re, os
 from types import SimpleNamespace
+import matplotlib.pyplot as plt
 
 import torch
 from torch import nn
@@ -57,24 +58,15 @@ class MultitaskBERT(nn.Module):
         ### for sst
         self.sst_fine_tune = nn.Sequential(
             # nn.Dropout(config.hidden_dropout_prob),
-            # nn.Linear(config.hidden_size,self.h_size),
-            # nn.ReLU(),
-            # nn.Linear(self.h_size,N_SENTIMENT_CLASSES)
             nn.Linear(config.hidden_size,N_SENTIMENT_CLASSES)
         )
         self.para_fine_tune = nn.Sequential(
-            # nn.Linear(config.hidden_size*3,config.hidden_size),
-            # nn.ReLU(),
-            # nn.Dropout(config.hidden_dropout_prob),            
-            # nn.Linear(config.hidden_size,2)
+            # nn.Dropout(config.hidden_dropout_prob),
             nn.Linear(config.hidden_size*3,1)
         )
 
         self.sts_fine_tune = nn.Sequential(
-            # nn.Linear(config.hidden_size*3,config.hidden_size),
-            # nn.ReLU(),
-            # nn.Dropout(config.hidden_dropout_prob),            
-            # nn.Linear(config.hidden_size,2)
+            # nn.Dropout(config.hidden_dropout_prob),
             nn.Linear(config.hidden_size*3,1)
         )
 
@@ -112,8 +104,8 @@ class MultitaskBERT(nn.Module):
         output1 = self.forward(input_ids_1, attention_mask_1)
         output2 = self.forward(input_ids_2, attention_mask_2)
         output_abs = torch.abs(output1 - output2)
-        output_span = torch.cat((output1, output2,output_abs), dim=1)
-        return  self.para_fine_tune(output_span)
+        output_cat = torch.cat((output1, output2,output_abs), dim=1)
+        return  self.para_fine_tune(output_cat)
 
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
@@ -125,8 +117,8 @@ class MultitaskBERT(nn.Module):
         output1 = self.forward(input_ids_1, attention_mask_1)
         output2 = self.forward(input_ids_2, attention_mask_2)
         output_abs = torch.abs(output1 - output2)
-        output_span = torch.cat((output1, output2,output_abs), dim=1)
-        return  self.sts_fine_tune(output_span)
+        output_cat = torch.cat((output1, output2,output_abs), dim=1)
+        return  self.sts_fine_tune(output_cat)
 
 
 
@@ -195,13 +187,18 @@ def train_multitask(args):
     best_dev_acc = 0
 
     # Run for the specified number of epochs
-
+    val_accuracy1=[]
+    val_accuracy2=[]
+    val_accuracy3=[]
+    train_loss1=[]
+    train_loss2=[]
+    train_loss3=[]
     for epoch in range(args.epochs):
         model.train()
-        train_loss = 0
 
         # sst
-        num_batches = 0
+        train_loss_sst = 0
+        num_batches_sst = 0
         for batch in tqdm(sst_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
             b_ids, b_mask, b_labels = (batch['token_ids'],
                                        batch['attention_mask'], batch['labels'])
@@ -217,9 +214,12 @@ def train_multitask(args):
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
-            num_batches += 1
+            train_loss_sst += loss.item()
+            num_batches_sst += 1
+
         # para
+        train_loss_para = 0
+        num_batches_para = 0
         for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
             b_ids_1, b_ids_2, b_mask_1, b_mask_2, b_labels = (batch['token_ids_1'],
                                     batch['token_ids_2'], batch['attention_mask_1'],
@@ -238,10 +238,12 @@ def train_multitask(args):
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
-            num_batches += 1
+            train_loss_para += loss.item()
+            num_batches_para += 1
 
         # sts
+        train_loss_sts = 0
+        num_batches_sts=0
         for batch in tqdm(sts_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
             b_ids_1, b_ids_2, b_mask_1, b_mask_2, b_labels = (batch['token_ids_1'],
                                     batch['token_ids_2'], batch['attention_mask_1'],
@@ -262,25 +264,71 @@ def train_multitask(args):
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item()
-            num_batches += 1
+            train_loss_sts += loss.item()
+            num_batches_sts += 1
 
-        train_loss = train_loss / (num_batches)
+        train_loss = (train_loss_sst+train_loss_para+train_loss_sts) / (num_batches_sst+num_batches_para+num_batches_sts)
 
         train_acc_para, _, _, train_acc_sst, _, _, train_acc_sts, *_ = model_eval_multitask(sst_train_dataloader, para_train_dataloader, sts_train_dataloader, model, device)
         dev_acc_para, _, _, dev_acc_sst, _, _, dev_acc_sts, *_ = model_eval_multitask(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, model, device)
 
+        val_accuracy1.append(dev_acc_sst)
+        val_accuracy2.append(dev_acc_para)
+        val_accuracy3.append(dev_acc_sts)
+        train_loss1.append(train_loss_sst/num_batches_sst)
+        train_loss2.append(train_loss_para/num_batches_para)
+        train_loss3.append(train_loss_sts/num_batches_sts)
+        
         train_acc=(train_acc_para+train_acc_sst+train_acc_sts)/3
         dev_acc = (dev_acc_para+dev_acc_sst+dev_acc_sts)/3
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
             save_model(model, optimizer, args, config, args.filepath) # edited: changed optimizer to optim
 
-        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
-        print(f"Epoch {epoch}: train_acc_sst :: {train_acc_sst :.3f}, dev_acc_sst :: {dev_acc_sst :.3f}")
-        print(f"Epoch {epoch}: train_acc_para :: {train_acc_para :.3f}, dev_acc_para :: {dev_acc_para :.3f}")
-        print(f"Epoch {epoch}: train_acc_sts :: {train_acc_sts :.3f}, dev_acc_sts :: {dev_acc_sts :.3f}")
-        
+        # print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+        print(f"Epoch {epoch}: train_acc_sst :: {train_acc_sst :.3f}, dev_acc_sst :: {dev_acc_sst :.3f}, train_loss_sst :: {train_loss_sst/num_batches_sst :.3f}")
+        print(f"Epoch {epoch}: train_acc_para :: {train_acc_para :.3f}, dev_acc_para :: {dev_acc_para :.3f}, train_loss_para :: {train_loss_para/num_batches_para :.3f}")
+        print(f"Epoch {epoch}: train_acc_sts :: {train_acc_sts :.3f}, dev_acc_sts :: {dev_acc_sts :.3f}, train_loss_sts :: {train_loss_sts/num_batches_sts :.3f}")
+    plot(val_accuracy1, val_accuracy2, val_accuracy3, train_loss1,train_loss2,train_loss3,args.epochs)
+def plot(val_accuracy1, val_accuracy2, val_accuracy3, train_loss1,train_loss2,train_loss3,num_epochs):
+    # 第一张图：训练集和验证集准确率
+    epochs = np.arange(1, num_epochs + 1)
+    plt.figure(figsize=(10, 5))
+    
+    # 创建一个1x2的子图网格的第一个子图
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, val_accuracy1, label='sst')
+    plt.plot(epochs, val_accuracy2, label='para')
+    plt.plot(epochs, val_accuracy3, label='sts')
+    plt.title('Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # 设置横坐标只显示整数
+    plt.xticks(epochs)
+
+    # 创建一个1x2的子图网格的第二个子图
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, train_loss1, label='sst')
+    plt.plot(epochs, train_loss2, label='para')
+    plt.plot(epochs, train_loss3, label='sts')
+    plt.title('Training Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    # 调整子图间距
+    plt.tight_layout()
+    
+    # 设置横坐标只显示整数
+    plt.xticks(epochs)
+    
+    # 保存图片
+    plt.savefig('./multitask_classifier.png')
+    
+    # 显示图片
+    plt.show()
 
 
 
@@ -313,7 +361,7 @@ def get_args():
     parser.add_argument("--sts_test", type=str, default="data/sts-test-student.csv")
 
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="finetune")
@@ -333,6 +381,11 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.1)
     parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
                         default=1e-5)
+
+
+# 1e-5 0.500 0.817 0.575 3
+# 1e-5 0.493 0.852 0.646 4
+# 1e-5 0.493 0.857 0.656 4
 
     args = parser.parse_args()
     return args

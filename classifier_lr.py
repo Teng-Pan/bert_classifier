@@ -267,7 +267,7 @@ def train(args):
     model = model.to(device)
 
     lr = args.lr
-    parameters=get_parameters(model,5e-5,0.95, 5e-5)
+    parameters=get_parameters(model,5e-5,0.95, 3e-5)
 
 ## 4e-5,0.95, 2e-5 0.529
 
@@ -407,7 +407,7 @@ def test(args):
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="finetune")
